@@ -11,8 +11,12 @@ from typing import Any
 
 import click
 
-from aumai_connectorguard.core import AuditLog, ConnectorRegistry, ConnectionValidator, RegistryError
-from aumai_connectorguard.models import ConnectorSchema
+from aumai_connectorguard.core import (
+    AuditLog,
+    ConnectionValidator,
+    ConnectorRegistry,
+)
+from aumai_connectorguard.models import AuditEntry, ConnectionAttempt, ConnectorSchema
 
 
 @click.group()
@@ -69,7 +73,7 @@ def register_command(schema_path: str, registry_file: str) -> None:
 
     try:
         schema = ConnectorSchema.model_validate(data)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         click.echo(click.style(f"invalid connector schema: {exc}", fg="red"), err=True)
         sys.exit(1)
 
@@ -79,15 +83,16 @@ def register_command(schema_path: str, registry_file: str) -> None:
     if registry_path.exists():
         try:
             registry_data = json.loads(registry_path.read_text(encoding="utf-8"))
-        except Exception:
-            pass
+        except Exception:  # noqa: BLE001, S110
+            pass  # Corrupt registry — start fresh rather than crashing.
 
     registry_data[schema.name] = schema.model_dump(mode="json")
     registry_path.write_text(json.dumps(registry_data, indent=2), encoding="utf-8")
 
     click.echo(
         click.style(
-            f"Registered connector '{schema.name}' v{schema.version} -> {registry_file}",
+            f"Registered connector '{schema.name}' v{schema.version}"
+            f" -> {registry_file}",
             fg="green",
         )
     )
@@ -142,7 +147,7 @@ def watch_command(agent_dir: str, registry_file: str, agent_id: str) -> None:
     for log_file in sorted(log_files):
         try:
             raw = json.loads(log_file.read_text(encoding="utf-8"))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             click.echo(click.style(f"  [SKIP] {log_file.name}: {exc}", fg="yellow"))
             continue
 
@@ -152,17 +157,18 @@ def watch_command(agent_dir: str, registry_file: str, agent_id: str) -> None:
                 continue
             entry.setdefault("source_agent", agent_id)
 
-            from aumai_connectorguard.models import ConnectionAttempt
-
             try:
                 attempt = ConnectionAttempt.model_validate(entry)
-            except Exception as exc:
-                click.echo(click.style(f"  [INVALID] {log_file.name}: {exc}", fg="yellow"))
+            except Exception as exc:  # noqa: BLE001
+                click.echo(
+                    click.style(
+                        f"  [INVALID] {log_file.name}: {exc}",
+                        fg="yellow",
+                    )
+                )
                 continue
 
             result = validator.validate(attempt)
-            from aumai_connectorguard.models import AuditEntry
-
             audit_log.append(AuditEntry(connection_attempt=attempt, result=result))
             total += 1
             if not result.allowed:
@@ -178,7 +184,9 @@ def watch_command(agent_dir: str, registry_file: str, agent_id: str) -> None:
                 )
             )
 
-    click.echo(f"\nProcessed {total} attempt(s): {total - denied} allowed, {denied} denied.")
+    click.echo(
+        f"\nProcessed {total} attempt(s): {total - denied} allowed, {denied} denied."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -192,7 +200,10 @@ def watch_command(agent_dir: str, registry_file: str, agent_id: str) -> None:
     "since_spec",
     default="1h",
     show_default=True,
-    help="Show entries from the last N seconds/minutes/hours (e.g. '30m', '2h', '3600s').",
+    help=(
+        "Show entries from the last N seconds/minutes/hours"
+        " (e.g. '30m', '2h', '3600s')."
+    ),
 )
 @click.option(
     "--output",
@@ -221,24 +232,28 @@ def audit_command(since_spec: str, output_format: str, log_file: str) -> None:
 
     try:
         raw_entries: Any = json.loads(log_path.read_text(encoding="utf-8"))
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         click.echo(click.style(f"error reading audit log: {exc}", fg="red"), err=True)
         sys.exit(1)
 
     if not isinstance(raw_entries, list):
-        click.echo(click.style("audit log format error: expected JSON array", fg="red"), err=True)
+        click.echo(
+            click.style(
+                "audit log format error: expected JSON array",
+                fg="red",
+            ),
+            err=True,
+        )
         sys.exit(1)
 
     audit_log = AuditLog()
     for raw in raw_entries:
         try:
-            from aumai_connectorguard.models import AuditEntry
-
             audit_log.append(AuditEntry.model_validate(raw))
-        except Exception:
-            pass
+        except Exception:  # noqa: BLE001, S110
+            pass  # Skip malformed entries rather than aborting the whole log.
 
-    cutoff = datetime.datetime.now(datetime.timezone.utc) - _parse_duration(since_spec)
+    cutoff = datetime.datetime.now(datetime.UTC) - _parse_duration(since_spec)
     entries = audit_log.since(cutoff)
 
     if not entries:
@@ -283,12 +298,15 @@ def _load_registry(registry_file: str) -> ConnectorRegistry:
         return registry
     try:
         data: Any = json.loads(registry_path.read_text(encoding="utf-8"))
-        for name, schema_data in data.items():
+        for _name, schema_data in data.items():
             schema = ConnectorSchema.model_validate(schema_data)
             registry.register(schema)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         click.echo(
-            click.style(f"warning: could not load registry '{registry_file}': {exc}", fg="yellow"),
+            click.style(
+                f"warning: could not load registry '{registry_file}': {exc}",
+                fg="yellow",
+            ),
             err=True,
         )
     return registry
@@ -300,7 +318,8 @@ def _parse_duration(spec: str) -> datetime.timedelta:
     match = pattern.match(spec.strip())
     if not match:
         raise click.BadParameter(
-            f"Invalid duration '{spec}'. Expected format: <number>[s|m|h], e.g. '30m', '2h', '3600s'."
+            f"Invalid duration '{spec}'."
+            " Expected format: <number>[s|m|h], e.g. '30m', '2h', '3600s'."
         )
     value = float(match.group(1))
     unit = match.group(2).lower()

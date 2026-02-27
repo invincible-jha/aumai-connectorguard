@@ -5,15 +5,15 @@ from __future__ import annotations
 import datetime
 import threading
 import time
-from typing import Any, Callable
+from typing import Any
 
 import jsonschema
 
 from aumai_connectorguard.models import (
     AuditEntry,
-    ConnectorSchema,
     ConnectionAttempt,
     ConnectionResult,
+    ConnectorSchema,
 )
 from aumai_connectorguard.rate_limiter import SlidingWindowRateLimiter
 
@@ -23,7 +23,7 @@ class RegistryError(Exception):
 
 
 class ConnectorRegistry:
-    """Register and look up :class:`~aumai_connectorguard.models.ConnectorSchema` objects.
+    """Register and look up ConnectorSchema objects.
 
     Thread-safe.  Connectors are keyed by name; re-registering with the same
     name overwrites the previous schema.
@@ -82,9 +82,8 @@ class ConnectionValidator:
     ``allowed=False`` and a descriptive ``reason``.
 
     Args:
-        registry: The :class:`ConnectorRegistry` to resolve schemas from.
-        rate_limiter: :class:`~aumai_connectorguard.rate_limiter.SlidingWindowRateLimiter`
-                      used for rate-limit enforcement.
+        registry: The ConnectorRegistry to resolve schemas from.
+        rate_limiter: SlidingWindowRateLimiter used for rate-limit enforcement.
         agent_permissions: Map of agent identifier to their permission tokens.
                            An agent not in the map is treated as having no
                            permissions.
@@ -102,6 +101,7 @@ class ConnectionValidator:
         self._rate_limiter = rate_limiter or SlidingWindowRateLimiter()
         self._agent_permissions: dict[str, list[str]] = agent_permissions or {}
         self._rate_limit_window_seconds = rate_limit_window_seconds
+        self._permissions_lock = threading.Lock()
 
     def validate(self, attempt: ConnectionAttempt) -> ConnectionResult:
         """Validate *attempt* and return a :class:`ConnectionResult`.
@@ -126,13 +126,15 @@ class ConnectionValidator:
             )
 
         # Step 2: permission check.
-        missing = self._missing_permissions(attempt.source_agent, schema.required_permissions)
+        missing = self._missing_permissions(
+            attempt.source_agent, schema.required_permissions
+        )
         if missing:
             return ConnectionResult(
                 allowed=False,
                 reason=(
-                    f"agent '{attempt.source_agent}' is missing required permissions: "
-                    f"{', '.join(sorted(missing))}"
+                    f"agent '{attempt.source_agent}' is missing required"
+                    f" permissions: {', '.join(sorted(missing))}"
                 ),
                 latency_ms=_elapsed_ms(start),
             )
@@ -148,15 +150,19 @@ class ConnectionValidator:
             return ConnectionResult(
                 allowed=False,
                 reason=(
-                    f"rate limit exceeded for connector '{attempt.connector_name}' "
-                    f"(limit: {schema.rate_limit} req/{self._rate_limit_window_seconds}s)"
+                    f"rate limit exceeded for connector"
+                    f" '{attempt.connector_name}'"
+                    f" (limit: {schema.rate_limit}"
+                    f" req/{self._rate_limit_window_seconds}s)"
                 ),
                 latency_ms=_elapsed_ms(start),
             )
 
         # Step 4: JSON Schema input validation.
         if schema.input_schema:
-            validation_error = _validate_json_schema(attempt.input_data, schema.input_schema)
+            validation_error = _validate_json_schema(
+                attempt.input_data, schema.input_schema
+            )
             if validation_error is not None:
                 return ConnectionResult(
                     allowed=False,
@@ -172,18 +178,20 @@ class ConnectionValidator:
 
     def grant_permission(self, agent: str, permission: str) -> None:
         """Add a permission token to an agent's allow-list."""
-        if agent not in self._agent_permissions:
-            self._agent_permissions[agent] = []
-        if permission not in self._agent_permissions[agent]:
-            self._agent_permissions[agent].append(permission)
+        with self._permissions_lock:
+            if agent not in self._agent_permissions:
+                self._agent_permissions[agent] = []
+            if permission not in self._agent_permissions[agent]:
+                self._agent_permissions[agent].append(permission)
 
     def revoke_permission(self, agent: str, permission: str) -> None:
         """Remove a permission token from an agent's allow-list."""
-        if agent in self._agent_permissions:
-            try:
-                self._agent_permissions[agent].remove(permission)
-            except ValueError:
-                pass
+        with self._permissions_lock:
+            if agent in self._agent_permissions:
+                try:
+                    self._agent_permissions[agent].remove(permission)
+                except ValueError:
+                    pass
 
     # ------------------------------------------------------------------
     # Private helpers
@@ -192,7 +200,8 @@ class ConnectionValidator:
     def _missing_permissions(
         self, agent: str, required: list[str]
     ) -> set[str]:
-        held = set(self._agent_permissions.get(agent, []))
+        with self._permissions_lock:
+            held = set(self._agent_permissions.get(agent, []))
         return set(required) - held
 
 
@@ -208,14 +217,18 @@ class AuditLog:
                            - datetime.timedelta(hours=1))
     """
 
-    def __init__(self) -> None:
+    def __init__(self, max_entries: int = 10_000) -> None:
         self._entries: list[AuditEntry] = []
+        self._max_entries = max_entries
         self._lock = threading.Lock()
 
     def append(self, entry: AuditEntry) -> None:
-        """Add *entry* to the log."""
+        """Add *entry* to the log, evicting oldest entries when at capacity."""
         with self._lock:
             self._entries.append(entry)
+            if len(self._entries) > self._max_entries:
+                # Keep only the most recent max_entries entries.
+                self._entries = self._entries[-self._max_entries :]
 
     def all_entries(self) -> list[AuditEntry]:
         """Return a snapshot of all entries (oldest first)."""
@@ -282,6 +295,8 @@ def _validate_json_schema(data: dict[str, Any], schema: dict[str, Any]) -> str |
         return str(exc.message)
     except jsonschema.SchemaError as exc:
         return f"invalid connector schema definition: {exc.message!s}"
+    except Exception as exc:
+        return f"schema validation error: {type(exc).__name__}: {exc}"
 
 
 __all__ = [

@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import functools
-import time
-from typing import Any, Callable, TypeVar, cast
+from collections.abc import Callable
+from typing import Any, TypeVar, cast
 
 from aumai_connectorguard.core import AuditLog, ConnectionValidator
 from aumai_connectorguard.models import AuditEntry, ConnectionAttempt, ConnectionResult
@@ -42,7 +42,7 @@ class RequestInterceptor:
         audit_log: AuditLog | None = None,
     ) -> None:
         self._validator = validator
-        self._audit_log = audit_log or AuditLog()
+        self._audit_log = audit_log if audit_log is not None else AuditLog()
 
     @property
     def audit_log(self) -> AuditLog:
@@ -70,7 +70,7 @@ class RequestInterceptor:
 
         def decorator(fn: _F) -> _F:
             @functools.wraps(fn)
-            def wrapper(*args: Any, **kwargs: Any) -> Any:
+            def wrapper(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
                 input_data = _args_to_dict(args, kwargs)
                 attempt = ConnectionAttempt(
                     connector_name=connector_name,
@@ -80,7 +80,9 @@ class RequestInterceptor:
 
                 result = self._validator.validate(attempt)
 
-                self._audit_log.append(AuditEntry(connection_attempt=attempt, result=result))
+                self._audit_log.append(
+                    AuditEntry(connection_attempt=attempt, result=result)
+                )
 
                 if not result.allowed:
                     raise InterceptorError(

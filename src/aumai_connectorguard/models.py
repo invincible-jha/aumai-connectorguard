@@ -15,7 +15,9 @@ class ConnectorSchema(BaseModel):
     used to validate connection payloads at runtime.
     """
 
-    name: str = Field(..., description="Unique connector identifier, e.g. 'openai-chat'")
+    name: str = Field(
+        ..., description="Unique connector identifier, e.g. 'openai-chat'"
+    )
     version: str = Field(..., description="SemVer string, e.g. '1.2.0'")
     input_schema: dict[str, Any] = Field(
         default_factory=dict,
@@ -59,7 +61,7 @@ class ConnectionAttempt(BaseModel):
 
     connector_name: str = Field(..., description="Name of the target connector")
     timestamp: datetime.datetime = Field(
-        default_factory=lambda: datetime.datetime.now(datetime.timezone.utc)
+        default_factory=lambda: datetime.datetime.now(datetime.UTC)
     )
     input_data: dict[str, Any] = Field(default_factory=dict)
     source_agent: str = Field(
@@ -83,7 +85,9 @@ class ConnectionResult(BaseModel):
     allowed: bool
     reason: str = Field(
         default="",
-        description="Human-readable explanation of why the attempt was allowed or denied",
+        description=(
+            "Human-readable explanation of why the attempt was allowed or denied"
+        ),
     )
     latency_ms: float = Field(
         default=0.0,
@@ -98,7 +102,7 @@ class AuditEntry(BaseModel):
     connection_attempt: ConnectionAttempt
     result: ConnectionResult
     timestamp: datetime.datetime = Field(
-        default_factory=lambda: datetime.datetime.now(datetime.timezone.utc)
+        default_factory=lambda: datetime.datetime.now(datetime.UTC)
     )
 
 
@@ -107,7 +111,7 @@ class RateLimitState(BaseModel):
 
     connector_name: str
     window_start: datetime.datetime = Field(
-        default_factory=lambda: datetime.datetime.now(datetime.timezone.utc)
+        default_factory=lambda: datetime.datetime.now(datetime.UTC)
     )
     request_count: int = Field(default=0, ge=0)
     limit: int = Field(default=60, ge=1)

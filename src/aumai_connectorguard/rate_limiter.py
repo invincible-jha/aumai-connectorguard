@@ -48,7 +48,7 @@ class SlidingWindowRateLimiter:
             ``True`` if the request is within limits and has been recorded,
             ``False`` if the limit is already reached.
         """
-        now = datetime.datetime.now(datetime.timezone.utc)
+        now = datetime.datetime.now(datetime.UTC)
         cutoff = now - datetime.timedelta(seconds=window_seconds)
 
         with self._lock:
@@ -69,14 +69,17 @@ class SlidingWindowRateLimiter:
 
     def current_count(self, connector: str, window_seconds: int) -> int:
         """Return the number of requests recorded within the last *window_seconds*."""
-        now = datetime.datetime.now(datetime.timezone.utc)
+        now = datetime.datetime.now(datetime.UTC)
         cutoff = now - datetime.timedelta(seconds=window_seconds)
 
         with self._lock:
             if connector not in self._windows:
                 return 0
             window = self._windows[connector]
-            return sum(1 for ts in window if ts >= cutoff)
+            # Evict stale entries so the deque stays compact over time.
+            while window and window[0] < cutoff:
+                window.popleft()
+            return len(window)
 
     def reset(self, connector: str) -> None:
         """Clear all recorded timestamps for *connector*."""
